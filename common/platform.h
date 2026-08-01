@@ -41,6 +41,37 @@
 #include <stdio.h>
 #endif
 
+/* LOCAL PATCH (not upstream): Visual C++ 6.0 only. Re-apply when updating
+   brotli; goes together with the BROTLI_INLINE override further down.
+
+   The VC6 optimizer miscompiles the decoder. Measured on full rebuilds of
+   the release configuration, decoding a known-good stream:
+
+     __forceinline (upstream)  + /O2  ->  heap corruption (0xC0000374)
+     __inline                  + /O2  ->  access violation in
+                                          BrotliDecoderDecompressStream
+     no inlining at all        + /O2  ->  heap corruption
+     no inlining at all        + /Od  ->  decodes correctly
+
+   Inlining only changes which way it breaks; the trigger is optimization
+   itself. The fix this settled on is these two pieces:
+
+     1. #pragma optimize("g", off) below - global optimizations off for
+        VC6. This header is pulled in by every brotli translation unit, so
+        it covers the whole decoder without touching the project file, and
+        the rest of SSP keeps building at /O2.
+     2. BROTLI_INLINE -> plain __inline, not __forceinline, for VC6
+        (further down). With the optimizer off there is nothing to force,
+        and the inliner is part of what breaks here, so it gets the weaker
+        hint.
+
+   This combination is what was verified working. Only brotli is affected;
+   the other decoders in ssp/kei build fine at /O2, so do not generalize
+   this to them. */
+#if defined(_MSC_VER) && (_MSC_VER <= 1200)
+#pragma optimize("g", off)
+#endif
+
 /* The following macros were borrowed from https://github.com/nemequ/hedley
  * with permission of original author - Evan Nemerson <evan@nemerson.com> */
 
@@ -118,8 +149,15 @@ OR:
     BROTLI_TI_VERSION_CHECK(8, 0, 0) ||                                        \
     (BROTLI_TI_VERSION_CHECK(7, 3, 0) && defined(__TI_GNU_ATTRIBUTE_SUPPORT__))
 #define BROTLI_INLINE BROTLI_MAYBE_INLINE __attribute__((__always_inline__))
-#elif BROTLI_MSVC_VERSION_CHECK(12, 0, 0)
-#define BROTLI_INLINE BROTLI_MAYBE_INLINE __forceinline
+/* LOCAL PATCH (not upstream) - piece 2 of the VC6 workaround described at
+   the top of this file. The MSVC branch is split at 13.0 (VC7) so that VC6
+   (_MSC_VER 1200 = MSVC 12.0) falls into the plain BROTLI_MAYBE_INLINE
+   (__inline) branch below instead of getting __forceinline. Re-apply when
+   updating brotli. */
+#elif BROTLI_MSVC_VERSION_CHECK(13, 0, 0)
+#define BROTLI_INLINE __forceinline
+#elif BROTLI_MSVC_VERSION_CHECK(12, 0, 0)  /* VC6 lands here (local patch) */
+#define BROTLI_INLINE BROTLI_MAYBE_INLINE
 #elif BROTLI_TI_VERSION_CHECK(7, 0, 0) && defined(__cplusplus)
 #define BROTLI_INLINE BROTLI_MAYBE_INLINE _Pragma("FUNC_ALWAYS_INLINE;")
 #elif BROTLI_IAR_VERSION_CHECK(8, 0, 0)
